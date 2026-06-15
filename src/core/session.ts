@@ -51,8 +51,11 @@ class SessionManager {
         // Expired — create new
         session = undefined
       } else {
-        // Update activity
+        // Update activity and agent if changed
         session.lastActivity = now
+        if (session.agent !== agent) {
+          session.agent = agent
+        }
         await this.saveSession(key, session)
         return session
       }
@@ -62,8 +65,11 @@ class SessionManager {
     session = await this.loadSession(key)
 
     if (session && now.getTime() - session.lastActivity.getTime() <= session.ttl) {
-      // Found and valid
+      // Found and valid — update agent if changed
       session.lastActivity = now
+      if (session.agent !== agent) {
+        session.agent = agent
+      }
       this.sessions.set(key, session)
       await this.saveSession(key, session)
       return session

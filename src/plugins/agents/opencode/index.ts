@@ -15,8 +15,16 @@ interface OpenCodeEvent {
   text?: string
   message?: string
   error?: string
+  sessionID?: string
   part?: OpenCodePart
 }
+
+interface CallResult {
+  text: string
+  sessionId: string | null
+}
+
+const sessionMap = new Map<string, string>()
 
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = 'opencode'
@@ -30,45 +38,32 @@ export class OpenCodeAdapter implements AgentAdapter {
     })
   }
 
-  async *sendPrompt(_sessionId: string, prompt: string, history?: ChatMessage[]): AsyncGenerator<string> {
+  async *sendPrompt(sessionId: string, prompt: string, history?: ChatMessage[]): AsyncGenerator<string> {
     console.log(`[OpenCode] sendPrompt called, prompt: ${prompt}, history: ${history?.length || 0} messages`)
 
-    // Build prompt with conversation context
-    const contextualPrompt = this.buildContextualPrompt(prompt, history)
+    const ocSessionId = sessionMap.get(sessionId)
+    const result = await this.callOpenCode(prompt, ocSessionId ?? null)
 
-    const response = await this.callOpenCode(contextualPrompt)
-    console.log(`[OpenCode] Response length: ${response.length}`)
+    if (result.sessionId) {
+      sessionMap.set(sessionId, result.sessionId)
+    }
 
-    if (response) {
-      yield response
+    console.log(`[OpenCode] Response length: ${result.text.length}`)
+
+    if (result.text) {
+      yield result.text
     }
   }
 
-  /**
-   * Build prompt with conversation history context
-   */
-  private buildContextualPrompt(prompt: string, history?: ChatMessage[]): string {
-    if (!history || history.length === 0) {
-      return prompt
-    }
-
-    const historyText = history
-      .map(msg => `[${msg.role === 'user' ? 'User' : 'Assistant'}]: ${msg.content}`)
-      .join('\n\n')
-
-    return `Previous conversation context:
-${historyText}
-
-Current request: ${prompt}`
-  }
-
-  private callOpenCode(prompt: string): Promise<string> {
+  private callOpenCode(prompt: string, existingOcSessionId: string | null): Promise<CallResult> {
     return new Promise((resolve, reject) => {
-      const proc = crossSpawn('opencode', [
-        'run',
-        '--format', 'json',
-        prompt,
-      ], {
+      const args = ['run', '--format', 'json']
+      if (existingOcSessionId) {
+        args.push('--session', existingOcSessionId)
+      }
+      args.push(prompt)
+
+      const proc = crossSpawn('opencode', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
@@ -76,6 +71,7 @@ Current request: ${prompt}`
       let stderr = ''
       let fullText = ''
       let errorMessage = ''
+      let ocSessionId: string | null = existingOcSessionId ?? null
 
       proc.stdout?.on('data', (data: Buffer) => {
         stdout += data.toString()
@@ -88,6 +84,12 @@ Current request: ${prompt}`
           try {
             const event: OpenCodeEvent = JSON.parse(line)
             console.log('[OpenCode] Event:', JSON.stringify(event))
+
+            // Capture the opencode session ID from the first event
+            if (!ocSessionId && event.sessionID) {
+              ocSessionId = event.sessionID
+              console.log('[OpenCode] Captured session ID:', ocSessionId)
+            }
 
             // Capture error message
             if (event.type === 'error') {
@@ -114,20 +116,18 @@ Current request: ${prompt}`
       })
 
       proc.on('close', (code) => {
-        console.log('[OpenCode] Process closed, code:', code)
-        if (code !== 0) {
-          // Return user-friendly error message
-          let errorMsg = 'OpenCode 执行失败'
-          if (errorMessage.includes('auth') || errorMessage.includes('login')) {
-            errorMsg = 'OpenCode 未登录或认证已过期'
-          } else if (errorMessage.includes('API') || errorMessage.includes('key')) {
-            errorMsg = 'OpenCode API 密钥无效'
-          } else if (errorMessage.length > 0 && errorMessage.length < 100) {
-            errorMsg = errorMessage
+        console.log('[OpenCode] Process closed, code:', code, 'stderr:', stderr)
+        // If we got text output, return it even if exit code != 0 (tool errors)
+        if (fullText) {
+          resolve({ text: fullText, sessionId: ocSessionId })
+        } else if (code !== 0) {
+          let errorMsg = stderr.trim() || errorMessage || 'OpenCode 执行失败'
+          if (errorMsg.length > 200) {
+            errorMsg = errorMsg.substring(0, 200) + '...'
           }
-          resolve(`❌ OpenCode 错误: ${errorMsg}\n\n请运行 \`opencode auth login\` 配置认证。`)
+          resolve({ text: `❌ OpenCode 错误: ${errorMsg}`, sessionId: ocSessionId })
         } else {
-          resolve(fullText)
+          resolve({ text: fullText, sessionId: ocSessionId })
         }
       })
     })

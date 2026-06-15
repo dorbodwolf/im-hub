@@ -96,9 +96,11 @@ program
       console.log('')
     }
 
-    // Set defaultAgent to first available installed agent
+    // Set defaultAgent to first available installed agent (only if configured one is unavailable)
     if (agentResult.available.length > 0) {
-      config.defaultAgent = agentResult.available[0]
+      if (!config.defaultAgent || !agentResult.available.includes(config.defaultAgent)) {
+        config.defaultAgent = agentResult.available[0]
+      }
     }
 
     // ============================================

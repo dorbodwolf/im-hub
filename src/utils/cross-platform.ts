@@ -24,6 +24,7 @@ export function crossSpawn(
     // On Windows, we need shell: true for commands like 'claude', 'opencode', etc.
     // to be found in PATH and executed properly.
     shell: isWindows ? (options.shell ?? true) : options.shell,
+    windowsHide: isWindows ? true : options.windowsHide,
   }
   return spawn(command, args, spawnOptions)
 }
